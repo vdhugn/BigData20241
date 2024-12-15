@@ -1,0 +1,167 @@
+# version: '3'
+
+services:
+  # HDFS cluster
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: namenode
+    ports:
+      - 9870:9870
+      - 9000:9000
+    environment:
+      - CLUSTER_NAME=test
+    env_file:
+      - ./hadoop/hadoop.env
+    restart: always
+    networks:
+      real_estate_net:
+    volumes:
+      - hadoop_namenode:/hadoop/dfs/name
+
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode
+    depends_on:
+      - namenode
+    env_file:
+      - ./hadoop/hadoop.env
+    restart: always
+    networks:
+      real_estate_net:
+    volumes:
+      - hadoop_datanode:/hadoop/dfs/data
+
+  # Kafka cluster
+  zookeeper:
+    container_name: zookeeper
+    image: wurstmeister/zookeeper
+    ports:
+      - "2181:2181"
+    volumes:
+      - ./docker/volumes/zookeeper/data:/data
+      - ./docker/volumes/zookeeper/datalog:/datalog
+    networks:
+      real_estate_net:
+    environment:
+      ZOO_LOG4J_PROP: "INFO,CONSOLE"
+      ZOO_DATA_DIR: /data
+      ZOO_DATALOG_DIR: /datalog
+
+  kafka:
+    container_name: kafka
+    hostname: kafka
+    image: confluentinc/cp-kafka:latest
+    ports:
+      - "9092:9092"
+    expose:
+      - "9093"
+    environment:
+      KAFKA_ADVERTISED_LISTENERS: "INSIDE://kafka:9093,OUTSIDE://localhost:9092"
+      KAFKA_CREATE_TOPICS: my-topic
+      KAFKA_INTER_BROKER_LISTENER_NAME: INSIDE
+      KAFKA_LISTENERS: "INSIDE://0.0.0.0:9093,OUTSIDE://0.0.0.0:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "INSIDE:PLAINTEXT,OUTSIDE:PLAINTEXT"
+      KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
+      LOG_DIR: /tmp/logs
+    volumes:
+      - ./docker/volumes/kafka:/var/lib/kafka
+    depends_on:
+      - zookeeper
+    networks:
+      real_estate_net:
+  
+  # Spark cluster
+  spark-master:
+    image: bde2020/spark-master:2.1.0-hadoop2.8-hive-java8
+    container_name: spark-master
+    ports:
+      - 8080:8080
+      - 7077:7077
+    env_file:
+      - ./hadoop/hadoop.env
+      - ./spark/.env
+    networks:
+      real_estate_net:
+
+  spark-worker:
+    image: bde2020/spark-worker:2.1.0-hadoop2.8-hive-java8
+    depends_on:
+      - spark-master
+    container_name: spark-worker
+    environment:
+      SPARK_MASTER: spark://spark-master:7077
+      SPARK_MODE: worker
+      SPARK_WORKER_CORES: 2
+      SPARK_WORKER_MEMORY: 1g
+    ports:
+      - 8081:8081
+    env_file:
+      - ./hadoop/hadoop.env
+    networks:
+      real_estate_net:
+
+  # DB and visualization
+  postgres:
+    image: postgres:14
+    container_name: postgresDB
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=streaming
+    ports:
+      - 5432:5432
+    networks:
+      real_estate_net:
+    volumes:
+      - postgresdb:/var/lib/postgresql/data
+  
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin4_container
+    restart: always
+    ports:
+      - "9898:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: user-name@domain-name.com
+      PGADMIN_DEFAULT_PASSWORD: password
+    networks:
+      real_estate_net:
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+
+  superset:
+    image: apache/superset:latest
+    container_name: superset
+    environment:
+      - SUPERSET_SECRET_KEY=secret
+      - SUPERSET_DATABASE_URL=postgresql+psycopg2://user:password@postgresDB:5432/streaming
+    restart: unless-stopped
+    ports:
+      - 8888:8888
+    command:
+      - /bin/bash
+      - -c
+      - |
+        pip install -r /app/requirements.txt &&
+        superset db upgrade &&
+        superset fab create-admin \
+          --username admin \
+          --password admin \
+          --firstname Admin \
+          --lastname User \
+          --email admin@superset.com &&
+        superset init &&
+        superset run -h 0.0.0.0 -p 8888
+    networks:
+      real_estate_net:
+    volumes:
+      - ./requirements.txt:/app/requirements.txt
+
+networks:
+  real_estate_net:
+
+volumes:
+  hadoop_namenode:
+  hadoop_datanode:
+  postgresdb:
+  pgadmin-data:
